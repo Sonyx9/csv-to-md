@@ -435,6 +435,7 @@ def index() -> str:
         </div>
       </div>
 
+      <!-- Contact block -->
       <div style="height: 14px;"></div>
       <div class="card">
         <div class="ad-row">
