@@ -1,0 +1,428 @@
+import csv
+import os
+import re
+from datetime import date
+
+from settings import Settings
+
+
+if os.path.isfile("saved_settings.py"):
+    print("saved_settings.py is already present")
+else:
+    with open("saved_settings.py", "w", encoding="utf-8") as f:
+        f.write('"""This is your settings file."""\n\n')
+
+from saved_settings import *  # noqa: F403
+
+
+class GetInput:
+    def __init__(self):
+        self.settings: dict = {}
+
+    def _apply_defaults(self) -> None:
+        # Backwards compatibility for older saved settings
+        self.settings.setdefault("outputMode", "multiple")
+        self.settings.setdefault("singleFileFormat", "table")
+
+    def choices(self):
+        # check if the user wants to load settings
+        self.loadSettings: str = ""
+        while True:
+            self.loadSettings = input('Do you want to load saved settings? Enter "y" for yes and "n" for no: ')
+            self.loadSettings = self.loadSettings.lower().strip()
+            if self.loadSettings == "y":
+                choice = input(
+                    "Which settings do you want to choose? Please enter the name of the dictionary in saved_settings.py: "
+                )
+                choice = choice.lower().strip()
+                # this will load the dictionary from saved_settings.py to the current settings
+                # this works because we import everything from saved_settings
+                self.settings = eval(choice)  # noqa: S307
+                self._apply_defaults()
+                print(f"These are your selected settings: {self.settings}")
+                break
+            elif self.loadSettings == "n":
+                instantiateSettings = Settings()
+                # set the settings and load them
+                # it calls the setGeneralSettings method in settings.py and lets the user choose all
+                # the settings which are not related to the formatting of the content
+                generalSettings = instantiateSettings.setGeneralSettings()
+                self.settings = generalSettings
+                self._apply_defaults()
+                print(f"These are your current general settings: {self.settings}")
+                break
+        self.mdChoices()
+
+    def mdChoices(self):
+        # NEW: single-file mode bypasses per-column formatting prompts and YAML key prompts
+        if self.settings.get("outputMode", "multiple") == "single":
+            instanceFile = ReadCreate(self.settings, False)
+            instanceFile.makeMdFiles()
+            return
+
+        if self.settings["addYAML"] == "y":
+            # instantiate ReadCreate for reading the CSV files
+            instanceFile = ReadCreate(self.settings, True)
+            if self.loadSettings == "n":
+                print("Now you will set the formatting for all of the columns one by one.")
+                instanceFile.getCellSettings()
+            instanceFile.getYamlKeys()
+            # creates the md files
+            instanceFile.makeMdFiles()
+        elif self.settings["inlineYAML"] == "y":
+            # instantiate ReadCreate for reading the CSV files
+            instanceFile = ReadCreate(self.settings, False, True)
+            if self.loadSettings == "n":
+                print("Now you will set the formatting for all of the columns one by one.")
+                instanceFile.getCellSettings()
+            instanceFile.getYamlKeys()
+            # creates the md files
+            instanceFile.makeMdFiles()
+        else:
+            # instantiates the ReadCreate class and finds the csv files
+            instanceFile = ReadCreate(self.settings, False)
+            if self.loadSettings == "n":
+                print("Now you will set the formatting for all of the columns one by one.")
+                instanceFile.getCellSettings()
+            # creates the md files
+            instanceFile.makeMdFiles()
+
+
+class ReadCreate:
+    def __init__(self, settings: dict, yaml: bool = False, inlineyaml: bool = False):
+        # will be populated with the contents of the first row of the first csv file as the values
+        # the key is `yaml_keys`
+        self.keyList: list = []
+        self.yaml: bool = yaml
+        self.inlineyaml: bool = inlineyaml
+        self.csvFiles: list = []
+        # instantiate appSettings with the GetInput class to get access to the user settings
+        self.settings = settings
+
+        # find the csv files in the current working directory
+        for dirpath, dirnames, files in os.walk("."):
+            for file_name in files:
+                if file_name.endswith(".csv"):
+                    normalised_path = os.path.normpath(dirpath + "/" + file_name)
+                    print(f"Found file: {file_name}")
+                    # append each found csv file to the list of csv files
+                    self.csvFiles.append(normalised_path)
+
+    def getYamlKeys(self):
+        self.keys: list = []
+        with open(self.csvFiles[0], "r", encoding="utf-8") as csvFile:
+            csvFileReader = csv.reader(csvFile, delimiter=self.settings["delimiter"])
+            for row in csvFileReader:
+                if csvFileReader.line_num == 1:
+                    for el in range(len(row)):
+                        self.keys.append(row[el].replace(" ", "_"))
+                    break
+
+    def getCellSettings(self):
+        # unchanged from original tool (multi-file mode)
+        addMdSetting = Settings()
+        with open(self.csvFiles[0], "r", encoding="utf-8") as csvFile:
+            csvFileReader = csv.reader(csvFile, delimiter=self.settings["delimiter"])
+            for row in csvFileReader:
+                if csvFileReader.line_num == 1:
+                    showOptions: int = 0
+                    for el in range(len(row)):
+                        cellFormatting: str = ""
+                        inCellList: str = ""
+                        separator: str = ""
+                        if showOptions == 0:
+                            print(addMdSetting.availableSettings)
+                            print(
+                                f'The file used for setting the format for all csv files in the current working directory is "{self.csvFiles[0]}".'
+                            )
+                            showOptions += 1
+
+                        while True:
+                            cellFormatting = input(f'How should the column "{row[el]}" be formatted? ')
+                            cellFormatting = cellFormatting.lower().strip()
+                            if cellFormatting in addMdSetting.availableSettingsList:
+                                break
+                        while True:
+                            if cellFormatting == "n":
+                                break
+                            inCellList = input(
+                                'Does this cell contain multiple values which should be separately formatted? "y" for yes and "n" for no: '
+                            )
+                            if inCellList.lower() == "n":
+                                break
+                            elif inCellList.lower() == "y":
+                                separator = input("How is your list separated? Please enter the character: ")
+                                break
+
+                        if len(inCellList) > 0 and len(separator) > 0:
+                            self.settings["column"][el] = [cellFormatting, inCellList, separator]
+                        else:
+                            self.settings["column"][el] = [cellFormatting]
+
+                    while True:
+                        save_settings = input('Do you want to save these settings? Enter "y" for yes and "n" for no: ')
+                        if save_settings.lower().strip() == "y":
+                            addMdSetting.saveSettings(self.settings)
+                            break
+                        elif save_settings.lower().strip() == "n":
+                            break
+                    break
+
+    def makeMdFiles(self):
+        # Wrapper for backwards compatible multi-file mode + new single-file mode
+        if self.settings.get("outputMode", "multiple") == "single":
+            return self.makeSingleMdFile()
+        return self.makeMdFilesMultiple()
+
+    def makeSingleMdFile(self):
+        if not self.csvFiles:
+            print("No CSV files found.")
+            return
+
+        source_csv = self.csvFiles[0]
+        delimiter = self.settings.get("delimiter", ",")
+        fmt = self.settings.get("singleFileFormat", "table")
+
+        with open(source_csv, "r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f, delimiter=delimiter)
+            rows = list(reader)
+
+        if not rows:
+            print("First CSV file is empty.")
+            return
+
+        headers = [h.replace("\ufeff", "").strip() for h in rows[0]]
+        data_rows = rows[1:]
+
+        header = (
+            "# CSV Export\n"
+            "Zdroj: CSV\n"
+            f"Datum: {date.today().isoformat()}\n\n"
+        )
+
+        if fmt == "notebooklm":
+            body = self.buildNotebookLM(headers, data_rows)
+        else:
+            body = self.buildMarkdownTable(headers, data_rows)
+
+        out_path = "output.md"
+        with open(out_path, "w", encoding="utf-8") as out:
+            out.write(header)
+            out.write(body)
+
+        print(f"✅ Hotovo: {out_path}")
+
+    def buildMarkdownTable(self, headers, rows):
+        def esc(v: str) -> str:
+            v = (v or "").strip().strip("\"'")
+            v = v.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            v = v.replace("|", "\\|")
+            return v
+
+        headers_esc = [esc(h) for h in headers]
+        out = []
+        out.append("| " + " | ".join(headers_esc) + " |")
+        out.append("|" + "|".join(["---"] * len(headers_esc)) + "|")
+
+        width = len(headers_esc)
+        for r in rows:
+            r = list(r)
+            if len(r) < width:
+                r = r + [""] * (width - len(r))
+            r_esc = [esc(c) for c in r[:width]]
+            out.append("| " + " | ".join(r_esc) + " |")
+
+        return "\n".join(out) + "\n"
+
+    def buildNotebookLM(self, headers, rows):
+        def clean(v: str) -> str:
+            return (v or "").strip().strip("\"'").replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+
+        out = []
+        out.append("## Záznamy\n")
+        width = len(headers)
+        for r in rows:
+            r = list(r)
+            if len(r) < width:
+                r = r + [""] * (width - len(r))
+            title = clean(r[0]) or "Row"
+            out.append(f"### {title}")
+            for i in range(1, width):
+                v = clean(r[i])
+                if not v:
+                    continue
+                out.append(f"- {clean(headers[i])}: {v}")
+            out.append("")
+        return "\n".join(out).rstrip() + "\n"
+
+    def makeMdFilesMultiple(self):
+        # ORIGINAL multi-file behavior (copied from previous makeMdFiles)
+        try:
+            if not os.path.exists("./data/"):
+                os.makedirs("./data/")
+        except OSError:
+            print("Error: Creating directory.: ./data/")
+
+        for file in self.csvFiles:
+            with open(file, "r", encoding="utf-8") as currentFile:
+                fileReader = csv.reader(currentFile, delimiter=self.settings["delimiter"])
+                for row in fileReader:
+                    if fileReader.line_num != 1:
+                        lst: list = []
+                        unformattedLst: list = []
+                        for el in range(len(row)):
+                            if self.yaml is True:
+                                unformattedLst.append(row[el].strip("\"'"))
+
+                            if len(self.settings["column"][el]) > 1:
+                                sublist: list = row[el].split(self.settings["column"][el][2])
+                                splitSublist: str = self.splitSubList(sublist, self.settings["column"][el][0])
+                                lst.append(splitSublist)
+                            else:
+                                formattedText = self.returnFormatting(row[el], self.settings["column"][el][0])
+                                if formattedText is not None:
+                                    lst.append(formattedText)
+                                elif formattedText is None and self.inlineyaml is True:
+                                    lst.append("null")
+
+                        fileName: str = ""
+                        if len(self.settings["fileNameCol"]) > 1:
+                            for idx, el in enumerate(self.settings["fileNameCol"]):
+                                if len(self.settings["fileNameCol"]) - 1 == idx:
+                                    fileName += row[el]
+                                else:
+                                    fileName += row[el] + self.settings["fileNameColSeparator"]
+                        else:
+                            fileName = row[int(*self.settings["fileNameCol"])]
+
+                        fileName = fileName[: self.settings["fileNameLength"]]
+                        fileName = fileName.strip()
+                        fileName = "./data/" + re.sub(r"<|>|:|\"|/|\\|\||\?|\*|\[|\]", "", fileName)
+
+                        if os.path.isfile(fileName + ".md"):
+                            counter: int = 1
+                            while True:
+                                if os.path.isfile(fileName + "_" + str(counter) + ".md"):
+                                    counter += 1
+                                else:
+                                    fileName += "_" + str(counter)
+                                    break
+                        fileName += ".md"
+
+                        strToWrite: str = ""
+
+                        try:
+                            if self.yaml is True:
+                                yamlLst: list = []
+                                for idx, key in enumerate(self.keys):
+                                    key = key.replace("\ufeff", "")
+                                    if len(self.settings["column"][idx]) > 1:
+                                        yamlSubLst: list = unformattedLst[idx].split(self.settings["column"][idx][2])
+                                        yamlSubStr: str = ""
+                                        for el in yamlSubLst:
+                                            if len(el) == 0:
+                                                continue
+                                            else:
+                                                yamlSubStr += f"\"{el.strip()}\", "
+                                        yamlSubStr = yamlSubStr.strip(", ")
+                                        yamlLst.append(f"{key}: [{yamlSubStr}]")
+                                    else:
+                                        if len(unformattedLst[idx]) == 0:
+                                            yamlLst.append(f"{key}: null")
+                                        else:
+                                            yamlLst.append(f"{key}: [\"{unformattedLst[idx]}\"]")
+                                strToWrite += "---\n"
+                                strToWrite += "\n".join(yamlLst)
+                                strToWrite += "\n---\n"
+                                strToWrite += "\n\n".join(lst)
+                            elif self.inlineyaml is True:
+                                inlineyamlLst: list = []
+                                for idx, key in enumerate(self.keys):
+                                    key = key.replace("\ufeff", "")
+                                    value = lst[idx].replace("\n", " ")
+                                    inlineyamlLst.append(f"{key}:: {value}")
+                                strToWrite += "\n".join(inlineyamlLst)
+                            else:
+                                strToWrite += "\n\n".join(lst)
+
+                            with open(fileName, "w", encoding="utf-8") as f:
+                                f.write(strToWrite)
+                        except Exception:
+                            if os.path.isfile(fileName):
+                                os.remove(fileName)
+                            with open("log.txt", "a", encoding="utf-8") as m:
+                                m.write(fileName + " -- Error.\n")
+
+    def splitSubList(self, sublist, formatting):
+        sublist_str: str = ""
+        for el in sublist:
+            if len(el) == 0:
+                continue
+            else:
+                sublist_str += self.returnFormatting(el.strip("\"' "), formatting) + "\n"
+        return sublist_str.strip("\n")
+
+    def returnFormatting(self, string, formatting):
+        if len(string) > 0:
+            if formatting == "n":
+                return f"{string}"
+            elif formatting == "wl":
+                return f"[[{string}]]"
+            elif formatting == "ml":
+                return f"[{string}]({string})"
+            elif formatting == "hl":
+                return f"=={string}=="
+            elif formatting == "it":
+                return f"*{string}*"
+            elif formatting == "bo":
+                return f"**{string}**"
+            elif formatting == "st":
+                return f"~~{string}~~"
+            elif formatting == "co":
+                return f"`{string}`"
+            elif formatting == "cb":
+                return f"```\n{string}\n```"
+            elif formatting == "h1":
+                return f"# {string}"
+            elif formatting == "h2":
+                return f"## {string}"
+            elif formatting == "h3":
+                return f"### {string}"
+            elif formatting == "h4":
+                return f"#### {string}"
+            elif formatting == "h5":
+                return f"##### {string}"
+            elif formatting == "h6":
+                return f"###### {string}"
+            elif formatting == "wlem":
+                return f"![[{string}]]"
+            elif formatting == "mlem":
+                return f"![{string}]({string})"
+            elif formatting == "ul":
+                return f"- {string}"
+            elif formatting == "ol":
+                return f"1. {string}"
+            elif formatting == "bq":
+                return f">{string}"
+            elif formatting == "ut":
+                return f"- [ ] {string}"
+            elif formatting == "ct":
+                return f"- [x] {string}"
+            elif formatting == "ma":
+                return f"${string}$"
+            elif formatting == "mb":
+                return f"$$\n{string}\n$$"
+            elif formatting == "oc":
+                return f"%%{string}%%"
+            elif formatting == "ta":
+                return f"#{string}"
+        else:
+            return None
+
+
+# instantiate GetInput class to start the script
+startScript = GetInput()
+startScript.choices()
+print("The program has now finished. Check log.txt to see if there are any errors.")
+
+
